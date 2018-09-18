@@ -11,6 +11,7 @@ import UserNotifications
 import UserNotificationsUI
 import MBProgressHUD
 import KeychainAccess
+import Shared
 
 class NotificationViewController: UIViewController, UNNotificationContentExtension {
 
@@ -21,9 +22,15 @@ class NotificationViewController: UIViewController, UNNotificationContentExtensi
     let urlConfiguration: URLSessionConfiguration = URLSessionConfiguration.default
 
     var streamingController: MjpegStreamingController?
+    var tokenManager: TokenManager?
 
     override func viewDidLoad() {
         super.viewDidLoad()
+
+        if let connectionInfo = Current.settingsStore.connectionInfo,
+            let tokenInfo = Current.settingsStore.tokenInfo {
+            self.tokenManager = TokenManager(connectionInfo: connectionInfo, tokenInfo: tokenInfo)
+        }
 
         let keychain = Keychain(service: "io.robbie.homeassistant")
         if let url = keychain["baseURL"] {
@@ -54,27 +61,41 @@ class NotificationViewController: UIViewController, UNNotificationContentExtensi
         let imageView = UIImageView()
         imageView.frame = self.view.frame
 
-        streamingController = MjpegStreamingController(imageView: imageView, contentURL: cameraProxyURL,
-                                                       sessionConfiguration: urlConfiguration)
-        streamingController?.gotNon200Status = { code in
-            var labelText = "Unknown error!"
-            switch code {
-            case 401:
-                labelText = "Authentication failed!"
-            case 404:
-                labelText = "Entity '\(entityId)' not found!"
-            default:
-                labelText = "Got non-200 status code (\(code))"
+        let configureStreaming = {
+            self.streamingController = MjpegStreamingController(imageView: imageView,
+                                                                contentURL: cameraProxyURL,
+                                                                sessionConfiguration: self.urlConfiguration)
+            self.streamingController?.gotNon200Status = { code in
+                var labelText = "Unknown error!"
+                switch code {
+                case 401:
+                    labelText = "Authentication failed!"
+                case 404:
+                    labelText = "Entity '\(entityId)' not found!"
+                default:
+                    labelText = "Got non-200 status code (\(code))"
+                }
+                self.showErrorLabel(message: labelText)
             }
-            self.showErrorLabel(message: labelText)
-        }
-        streamingController?.didFinishLoading = {
-            print("Finished loading")
-            self.hud!.hide(animated: true)
+            self.streamingController?.didFinishLoading = {
+                print("Finished loading")
+                self.hud!.hide(animated: true)
 
-            self.view.addSubview(imageView)
+                self.view.addSubview(imageView)
+            }
+            self.streamingController?.play()
         }
-        streamingController?.play()
+
+        if let tokenManager = self.tokenManager {
+            tokenManager.bearerToken.done { token in
+                self.urlConfiguration.httpAdditionalHeaders = ["Authentication": "Bearer \(token)"]
+            }.catch { error in
+                self.showErrorLabel(message: "Error getting Authentication Token")
+            }
+        } else {
+            configureStreaming()
+        }
+
         self.extensionContext?.mediaPlayingStarted()
     }
 
